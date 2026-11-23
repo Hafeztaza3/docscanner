@@ -9,8 +9,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Unpack project
-        run: unzip -q -o "$(ls -t project*.zip | head -n 1)"
+        with:
+          fetch-depth: 0
+      - name: Unpack newest project zip
+        shell: bash
+        run: |
+          best=""
+          bestt=0
+          for f in project*.zip; do
+            t=$(git log -1 --format=%ct -- "$f")
+            if [ "${t:-0}" -ge "$bestt" ]; then best="$f"; bestt="${t:-0}"; fi
+          done
+          echo "Using: $best"
+          unzip -q -o "$best"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -20,7 +31,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
-      - run: gradle assembleDebug --no-daemon
+      - name: Build
+        shell: bash
+        run: gradle assembleDebug --no-daemon --console=plain 2>&1 | tee build.log
       - uses: actions/upload-artifact@v4
         with:
           name: SafhaScanner-APK
@@ -32,3 +45,14 @@ jobs:
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk SafhaScanner.apk
           gh release create "apk-${{ github.run_number }}" SafhaScanner.apk --title "SafhaScanner #${{ github.run_number }}" --notes "Debug APK"
+      - name: Publish build log on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          [ -f build.log ] || echo "no build log" > build.log
+          grep -n -E "^e: |error:|FAILED|What went wrong|Could not|Caused by|AAPT|Execution failed" build.log | head -80 > errors.log || true
+          tail -n 150 build.log > tail.log
+          gh release create "buildlog-${{ github.run_number }}" errors.log tail.log --title "Build log #${{ github.run_number }}" --notes "Build failed"
+          
